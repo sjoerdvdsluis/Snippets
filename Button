@@ -1,0 +1,39 @@
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Ubuntu:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap" rel="stylesheet">
+<style>
+.btn,
+.btn-default{
+    color: #000;
+    outline: none;
+    border: none;
+    padding: 10px 20px;
+    margin: 0px;
+    border-radius: 4px;
+    border-width: 2px 2px 3px 2px;
+    border-color: #000;
+    border-style: solid;
+    min-width: 50px;
+    font-weight: bold;
+    font-family: Ubuntu;
+    font-size: 12px;
+    cursor: pointer;
+    box-sizing: border-box;
+    background: linear-gradient(to bottom, #40A800 50%, #328600 50%);
+color: white;
+text-decoration: unset;
+
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    text-shadow:none;
+
+}
+</style>
+<a href="/news/{newsID-2}" class="btn btn-block right">Bekijk bericht</a>
