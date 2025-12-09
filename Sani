@@ -1,0 +1,241 @@
+    /**
+     * Shortcode for company-wide statistics (hero section)
+     * Usage: [kv_company_statistics] or [kv_company_statistics use_aggregation="true"]
+     * 
+     * By default tries to use the page's ACF 'invite_api' token with group statistics API.
+     * If that fails (401 error), falls back to aggregation method.
+     * You can force aggregation by adding use_aggregation="true"
+     */
+    public function render_company_statistics($atts)
+    {
+        global $kiyoh_locations;
+
+        $atts = shortcode_atts(
+            array(
+                'use_aggregation' => 'false', // Set to 'true' to force aggregation method
+            ),
+            $atts,
+            'kv_company_statistics'
+        );
+
+        $force_aggregation = ($atts['use_aggregation'] === 'true');
+
+        // Try to get API token from current page's ACF field
+        $api_token = get_field('invite_api');
+
+        // First attempt: Use Group Statistics API if we have a token and not forcing aggregation
+        if (!empty($api_token) && !$force_aggregation) {
+            $cache_key = 'kv_company_stats_group_' . md5($api_token);
+            $cached_data = get_transient($cache_key);
+
+            if ($cached_data !== false && !is_wp_error($cached_data)) {
+                // Use cached group statistics
+                $average_rating = $cached_data['average_rating'];
+                $recommendation = $cached_data['recommendation'];
+                $number_reviews = $cached_data['number_reviews'];
+                $category_scores = $cached_data['category_scores'];
+                $data_source = 'cached_group';
+            } else {
+                // Try fetching from Group Statistics API
+                $stats_data = $this->fetch_group_statistics($api_token);
+
+                if (!is_wp_error($stats_data)) {
+                    // Success! Extract and cache the data
+                    $average_rating = isset($stats_data['averageRating']) ? floatval($stats_data['averageRating']) : 0;
+                    $recommendation = isset($stats_data['recommendation']) ? intval($stats_data['recommendation']) : 0;
+                    $number_reviews = isset($stats_data['numberReviews']) ? intval($stats_data['numberReviews']) : 0;
+
+                    // Extract category averages
+                    $category_scores = array();
+                    if (isset($stats_data['locationGroupQuestionAverage']) && is_array($stats_data['locationGroupQuestionAverage'])) {
+                        foreach ($stats_data['locationGroupQuestionAverage'] as $item) {
+                            if (
+                                isset($item['questionGroup']) && $item['questionGroup'] === 'LOCATION_GROUP' &&
+                                isset($item['questionType']) && $item['questionType'] === 'INT' &&
+                                isset($item['averageRating']) &&
+                                isset($item['questionTranslation'])
+                            ) {
+                                $question = trim(str_replace('*', '', $item['questionTranslation']));
+                                $category_scores[] = array(
+                                    'name' => $question,
+                                    'score' => floatval($item['averageRating'])
+                                );
+                            }
+                        }
+                    }
+
+                    // Cache for 1 hour
+                    $cache_data = array(
+                        'average_rating' => $average_rating,
+                        'recommendation' => $recommendation,
+                        'number_reviews' => $number_reviews,
+                        'category_scores' => $category_scores
+                    );
+                    set_transient($cache_key, $cache_data, HOUR_IN_SECONDS);
+                    $data_source = 'group_api';
+                } else {
+                    // Group API failed (likely 401), fall back to aggregation
+                    $force_aggregation = true;
+                }
+            }
+        } else {
+            // No token or forced aggregation
+            $force_aggregation = true;
+        }
+
+        // Fallback: Use aggregation method if Group API not available
+        if ($force_aggregation) {
+            if (empty($kiyoh_locations) || !is_array($kiyoh_locations)) {
+                return '<p class="kv-error">Error: Location configuration not found. Make sure $kiyoh_locations is defined in functions.php</p>';
+            }
+
+            // Check cache first
+            $cache_key = 'kv_company_stats_aggregated';
+            $cached_data = get_transient($cache_key);
+
+            if ($cached_data !== false) {
+                // Use cached data
+                $average_rating = $cached_data['average_rating'];
+                $recommendation = $cached_data['recommendation'];
+                $number_reviews = $cached_data['number_reviews'];
+                $category_scores = $cached_data['category_scores'];
+                $data_source = 'cached_aggregated';
+            } else {
+                // Calculate company-wide statistics by aggregating all locations
+                $total_weighted_sum = 0;
+                $total_reviews = 0;
+                $total_recommendations = 0;
+                $category_totals = array();
+                $category_counts = array();
+
+                foreach ($kiyoh_locations as $location) {
+                    $stats_data = $this->fetch_location_statistics($location['id'], $location['token']);
+
+                    if (is_wp_error($stats_data) || empty($stats_data)) {
+                        continue; // Skip failed locations
+                    }
+
+                    // Aggregate overall rating
+                    if (isset($stats_data['averageRating']) && isset($stats_data['numberReviews'])) {
+                        $rating = floatval($stats_data['averageRating']);
+                        $count = intval($stats_data['numberReviews']);
+
+                        $total_weighted_sum += $rating * $count;
+                        $total_reviews += $count;
+                    }
+
+                    // Aggregate recommendations
+                    if (isset($stats_data['recommendation'])) {
+                        $total_recommendations += floatval($stats_data['recommendation']);
+                    }
+
+                    // Aggregate category scores
+                    if (isset($stats_data['locationQuestionAverage']) && is_array($stats_data['locationQuestionAverage'])) {
+                        foreach ($stats_data['locationQuestionAverage'] as $item) {
+                            if (
+                                isset($item['questionGroup']) && $item['questionGroup'] === 'LOCATION_GROUP' &&
+                                isset($item['questionType']) && $item['questionType'] === 'INT' &&
+                                isset($item['averageRating']) &&
+                                isset($item['questionTranslations']) && is_array($item['questionTranslations']) && !empty($item['questionTranslations'])
+                            ) {
+                                // Fix: questionTranslations is an array, get the first element
+                                $question = trim(str_replace('*', '', $item['questionTranslations'][0]));
+                                $score = floatval($item['averageRating']);
+
+                                if (!isset($category_totals[$question])) {
+                                    $category_totals[$question] = 0;
+                                    $category_counts[$question] = 0;
+                                }
+
+                                $category_totals[$question] += $score;
+                                $category_counts[$question]++;
+                            }
+                        }
+                    }
+                }
+
+                // Calculate final averages
+                $average_rating = $total_reviews > 0 ? $total_weighted_sum / $total_reviews : 0;
+                $recommendation = count($kiyoh_locations) > 0 ? round($total_recommendations / count($kiyoh_locations)) : 0;
+                $number_reviews = $total_reviews;
+
+                // Calculate category averages
+                $category_scores = array();
+                $ordered_categories = array(
+                    'Inrichting showroom',
+                    'Assortiment',
+                    'Personeel (verkoop)',
+                    'Kennis en informatie',
+                    'Advies/ontwerp/offerte traject',
+                    'Prijs/kwaliteit verhouding',
+                    'Levertijd',
+                    'Personeel (monteurs)',
+                    'Vakmanschap'
+                );
+
+                foreach ($ordered_categories as $category) {
+                    if (isset($category_totals[$category]) && $category_counts[$category] > 0) {
+                        $category_scores[] = array(
+                            'name' => $category,
+                            'score' => $category_totals[$category] / $category_counts[$category]
+                        );
+                    }
+                }
+
+                // Cache for 1 hour
+                $cache_data = array(
+                    'average_rating' => $average_rating,
+                    'recommendation' => $recommendation,
+                    'number_reviews' => $number_reviews,
+                    'category_scores' => $category_scores
+                );
+                set_transient($cache_key, $cache_data, HOUR_IN_SECONDS);
+                $data_source = 'aggregated';
+            }
+        }
+
+        // Ensure we have data to display
+        if (empty($average_rating) && empty($number_reviews)) {
+            return '<p class="kv-error">Error: Could not fetch company statistics. Please check your configuration.</p>';
+        }
+
+        // Render output
+        ob_start();
+    ?>
+        <div class="kv-company-hero">
+            <div class="kv-company-stats-wrapper">
+                <div class="kv-company-logo">
+                    <img src="<?php echo esc_url(plugin_dir_url(__FILE__) . 'assets/klantenvertellen-logo.png'); ?>" alt="Klantenvertellen" />
+                </div>
+                <div class="kv-company-main-stats">
+                    <div class="kv-company-stat-item">
+                        <span class="kv-company-stat-value"><?php echo number_format($average_rating, 1, ',', '.'); ?></span>
+                        <p class="kv-company-stat-label">Gemiddelde<br>beoordeling</p>
+                    </div>
+                    <div class="kv-company-stat-item">
+                        <span class="kv-company-stat-value"><?php echo $recommendation; ?>%</span>
+                        <p class="kv-company-stat-label">Beveelt<br>ons aan</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="kv-company-summary">
+                <h2 class="kv-company-title">Gemiddelde score <?php echo number_format($number_reviews, 0, ',', '.'); ?> reviews</h2>
+
+                <?php if (!empty($category_scores)) : ?>
+                    <div class="kv-company-categories">
+                        <ul class="kv-company-category-list">
+                            <?php foreach ($category_scores as $item) : ?>
+                                <li class="kv-company-category-item">
+                                    <span class="kv-company-cat-name"><?php echo esc_html($item['name']); ?></span>
+                                    <span class="kv-company-cat-value"><?php echo number_format($item['score'], 1, ',', '.'); ?></span>
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+    <?php
+        return ob_get_clean();
+    }
